@@ -108,6 +108,31 @@ func (u Usage) String() string {
 	}
 	return fmt.Sprintf("Usage: [%s]", strings.Join(names, ","))
 }
+func PackBeaconIREC(ps *seg.PathSegment) ([]byte, error) {
+	if ps == nil {
+		panic("path segment must not be nil")
+	}
+	pb := &cppb.IRECPathSegment{
+		SegmentInfo: ps.Info.Raw,
+		AsEntries:   make([]*cppb.IRECASEntry, 0, len(ps.ASEntries)),
+	}
+	for _, entry := range ps.ASEntries {
+		pb.AsEntries = append(pb.AsEntries, &cppb.IRECASEntry{
+			Signed:     entry.Signed,
+			SignedBody: entry.SignedBody,
+			Unsigned:   seg.UnsignedExtensionsToPB(entry.UnsignedExtensions),
+		})
+	}
+	return proto.Marshal(pb)
+}
+
+func UnpackBeaconIREC(raw []byte) (*cppb.IRECPathSegment, error) {
+	var pb cppb.IRECPathSegment
+	if err := proto.Unmarshal(raw, &pb); err != nil {
+		return nil, err
+	}
+	return &pb, nil
+}
 
 // PackBeacon packs a beacon.
 func PackBeacon(ps *seg.PathSegment) ([]byte, error) {

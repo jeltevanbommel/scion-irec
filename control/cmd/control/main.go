@@ -20,12 +20,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/scionproto/scion/control/irec/egress"
+	"github.com/scionproto/scion/control/irec/ingress"
+	seg "github.com/scionproto/scion/pkg/segment"
+	"github.com/scionproto/scion/pkg/snet/addrutil"
+	"google.golang.org/grpc/resolver"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -120,6 +126,10 @@ func realMain(ctx context.Context) error {
 		Validator: &topology.ControlValidator{ID: globalCfg.General.ID},
 		Metrics:   metrics.TopoLoader,
 	})
+	log.Info("IREC will orginate using the following", "algs", globalCfg.IREC.OriginationAlgorithms)
+
+	// TODO(jvb) Check whether the file in irec config is also the same as hash.
+
 	if err != nil {
 		return serrors.WrapStr("creating topology loader", err)
 	}
@@ -128,6 +138,7 @@ func realMain(ctx context.Context) error {
 		defer log.HandlePanic()
 		return topo.Run(errCtx)
 	})
+
 	intfs := ifstate.NewInterfaces(adaptInterfaceMap(topo.InterfaceInfoMap()), ifstate.Config{})
 	g.Go(func() error {
 		defer log.HandlePanic()
@@ -320,17 +331,94 @@ func realMain(ctx context.Context) error {
 	}
 	cppb.RegisterTrustMaterialServiceServer(quicServer, trustServer)
 	cppb.RegisterTrustMaterialServiceServer(tcpServer, trustServer)
+	///
+	// IREC
+	// IREC
+	// IREC
 
-	// Handle beaconing.
-	cppb.RegisterSegmentCreationServiceServer(quicServer, &beaconinggrpc.SegmentCreationServer{
-		Handler: &beaconing.Handler{
-			LocalIA:        topo.IA(),
-			Inserter:       beaconStore,
-			Interfaces:     intfs,
-			Verifier:       verifier,
-			BeaconsHandled: libmetrics.NewPromCounter(metrics.BeaconingReceivedTotal),
+	ingressDB, err := storage.NewIngressStorage(globalCfg.IngressDB, topo.IA())
+	if err != nil {
+		return serrors.WrapStr("initializing beacon storage", err)
+	}
+	defer ingressDB.Close()
+	//beaconDB = beaconstoragemetrics.WrapDB(beaconDB, beaconstoragemetrics.Config{
+	//	Driver:       string(storage.BackendSqlite),
+	//	QueriesTotal: libmetrics.NewPromCounter(metrics.BeaconDBQueriesTotal),
+	//})
+	policies, err := cs.LoadNonCorePolicies(globalCfg.BS.Policies)
+	if err != nil {
+		serrors.WrapStr("policies", err)
+	}
+	db, err := ingress.NewIngressDB(policies, ingressDB)
+	if err != nil {
+		return serrors.WrapStr("initializing beacon store", err)
+	}
+
+	var propagationFilter func(intf *ifstate.Interface) bool
+	if topo.Core() {
+		propagationFilter = func(intf *ifstate.Interface) bool {
+			topoInfo := intf.TopoInfo()
+			return topoInfo.LinkType == topology.Core
+		}
+	} else {
+		propagationFilter = func(intf *ifstate.Interface) bool {
+			topoInfo := intf.TopoInfo()
+			return topoInfo.LinkType == topology.Child
+		}
+	}
+	racmanager := ingress.RACManager{
+		RACList:       &sync.Map{},
+		RACListUnsafe: make(map[string]*ingress.RACInfo),
+		RACCount:      &atomic.Uint64{},
+		Dialer: &libgrpc.TCPDialer{
+			SvcResolver: func(dst addr.HostSVC) []resolver.Address {
+				if base := dst.Base(); base != addr.SvcCS {
+					panic("Unsupported address type, implementation error?")
+				}
+				targets := []resolver.Address{}
+				for _, entry := range topo.ControlServiceAddresses() {
+					targets = append(targets, resolver.Address{Addr: entry.String()})
+				}
+				return targets
+			},
 		},
-	})
+	}
+	is := &ingress.IngressServer{
+		IncomingHandler: ingress.Handler{
+			LocalIA:     topo.IA(),
+			IngressDB:   db,
+			Verifier:    verifier,
+			Interfaces:  intfs,
+			AlgorithmDB: nil, // TODO
+		},
+		IngressDB:             db,
+		RACManager:            racmanager,
+		PropagationInterfaces: intfs.FilteredMapped(propagationFilter),
+	}
+	cppb.RegisterIngressServiceServer(quicServer, is)
+	cppb.RegisterIngressServiceServer(tcpServer, is) //TODO this is a security risk? because others can now register racs...
+	// Register our legacy server;
+	cppb.RegisterSegmentCreationServiceServer(quicServer, &ingress.SegmentCreationServer{IngressServer: is})
+	egressDB, err := storage.NewEgressStorage(globalCfg.EgressDB, topo.IA())
+	if err != nil {
+		return serrors.WrapStr("initializing beacon storage", err)
+	}
+	defer egressDB.Close()
+
+	// END IREC
+	// END IREC
+	// END IREC
+	////
+	// Handle beaconing.
+	//cppb.RegisterSegmentCreationServiceServer(quicServer, &beaconinggrpc.SegmentCreationServer{
+	//	Handler: &beaconing.Handler{
+	//		LocalIA:        topo.IA(),
+	//		Inserter:       beaconStore,
+	//		Interfaces:     intfs,
+	//		Verifier:       verifier,
+	//		BeaconsHandled: libmetrics.NewPromCounter(metrics.BeaconingReceivedTotal),
+	//	},
+	//})
 
 	// Handle segment lookup
 	authLookupServer := &segreqgrpc.LookupServer{
@@ -385,6 +473,114 @@ func realMain(ctx context.Context) error {
 	}
 
 	signer := cs.NewSigner(topo.IA(), trustDB, globalCfg.General.ConfigDir)
+
+	staticInfoEG, err := egress.ParseStaticInfoCfg(globalCfg.General.StaticInfoConfig())
+	if err != nil {
+		log.Info("No static info file found. Static info settings disabled.", "err", err)
+	}
+	intfMap := make(map[uint32]*ifstate.Interface)
+	for _, intf := range intfs.Filtered(propagationFilter) {
+		intfMap[uint32(intf.TopoInfo().ID)] = intf
+	}
+
+	internalErr := libmetrics.NewPromCounter(metrics.BeaconingRegistrarInternalErrorsTotal)
+	registered := libmetrics.NewPromCounter(metrics.BeaconingRegisteredTotal)
+	writers := make([]egress.Writer, 0)
+	if topo.Core() {
+		writers = append(writers, &egress.LocalWriter{
+			InternalErrors: libmetrics.CounterWith(internalErr, "seg_type", seg.TypeCore.String()),
+			Registered:     registered,
+			Type:           seg.TypeCore,
+			Intfs:          intfs,
+			Extender: &egress.DefaultExtender{
+				IA:     topo.IA(),
+				Signer: signer,
+				MAC:    macGen,
+				Intfs:  intfs,
+				MTU:    topo.MTU(),
+				MaxExpTime: func() uint8 {
+					return db.MaxExpTime(beacon.CoreRegPolicy)
+				},
+				Task:       "propagator",
+				StaticInfo: func() *egress.StaticInfoCfg { return staticInfoEG },
+				EPIC:       false,
+			},
+			Store: &seghandler.DefaultStorage{PathDB: pathDB},
+		})
+	} else {
+		writers = append(writers, &egress.LocalWriter{
+			InternalErrors: libmetrics.CounterWith(internalErr, "seg_type", seg.TypeUp.String()),
+			Registered:     registered,
+			Type:           seg.TypeUp,
+			Intfs:          intfs,
+			Extender: &egress.DefaultExtender{
+				IA:     topo.IA(),
+				Signer: signer,
+				MAC:    macGen,
+				Intfs:  intfs,
+				MTU:    topo.MTU(),
+				MaxExpTime: func() uint8 {
+					return db.MaxExpTime(beacon.UpRegPolicy)
+				},
+				Task:       "propagator",
+				StaticInfo: func() *egress.StaticInfoCfg { return staticInfoEG },
+				EPIC:       false,
+			},
+			Store: &seghandler.DefaultStorage{PathDB: pathDB},
+		})
+
+		writers = append(writers, &egress.RemoteWriter{
+			InternalErrors: libmetrics.CounterWith(internalErr, "seg_type", seg.TypeDown.String()),
+			Registered:     registered,
+			Type:           seg.TypeDown,
+			Intfs:          intfs,
+			Extender: &egress.DefaultExtender{
+				IA:     topo.IA(),
+				Signer: signer,
+				MAC:    macGen,
+				Intfs:  intfs,
+				MTU:    topo.MTU(),
+				MaxExpTime: func() uint8 {
+					return db.MaxExpTime(beacon.DownRegPolicy)
+				},
+				Task:       "propagator",
+				StaticInfo: func() *egress.StaticInfoCfg { return staticInfoEG },
+				EPIC:       false,
+			},
+			RPC: beaconinggrpc.Registrar{Dialer: dialer},
+			Pather: addrutil.Pather{
+				NextHopper: topo,
+			},
+		})
+	}
+
+	es := &egress.Propagator{
+		Store:         egressDB,
+		AllInterfaces: intfs,
+		PropagationInterfaces: func() []*ifstate.Interface {
+			return intfs.Filtered(propagationFilter)
+		},
+		Writers: writers,
+		Extender: &egress.DefaultExtender{
+			IA:     topo.IA(),
+			Signer: signer,
+			MAC:    macGen,
+			Intfs:  intfs,
+			MTU:    topo.MTU(),
+			MaxExpTime: func() uint8 {
+				return db.MaxExpTime(beacon.PropPolicy)
+			},
+			Task:       "propagator",
+			StaticInfo: func() *egress.StaticInfoCfg { return staticInfoEG },
+			EPIC:       false,
+		},
+		Interfaces:        intfMap,
+		PropagationFilter: propagationFilter,
+		Peers:             egress.SortedIntfs(intfs, topology.Peer),
+		SenderFactory:     &egress.BeaconSenderFactory{Dialer: dialer},
+	}
+	cppb.RegisterEgressServiceServer(quicServer, es)
+	cppb.RegisterEgressServiceServer(tcpServer, es)
 
 	var chainBuilder renewal.ChainBuilder
 	var caClient *caapi.Client
@@ -735,19 +931,6 @@ func realMain(ctx context.Context) error {
 		log.Info("No static info file found. Static info settings disabled.", "err", err)
 	}
 
-	var propagationFilter func(intf *ifstate.Interface) bool
-	if topo.Core() {
-		propagationFilter = func(intf *ifstate.Interface) bool {
-			topoInfo := intf.TopoInfo()
-			return topoInfo.LinkType == topology.Core
-		}
-	} else {
-		propagationFilter = func(intf *ifstate.Interface) bool {
-			topoInfo := intf.TopoInfo()
-			return topoInfo.LinkType == topology.Child
-		}
-	}
-
 	originationFilter := func(intf *ifstate.Interface) bool {
 		topoInfo := intf.TopoInfo()
 		return topoInfo.LinkType == topology.Core || topoInfo.LinkType == topology.Child
@@ -795,6 +978,55 @@ func realMain(ctx context.Context) error {
 	defer tasks.Kill()
 	log.Info("Started periodic tasks")
 
+	v := make([]*ifstate.Interface, 0, len(intfs.All()))
+	for _, value := range intfs.All() {
+		v = append(v, value)
+	}
+	if topo.Core() {
+		originationFilter = func(intf *ifstate.Interface) bool {
+			topoInfo := intf.TopoInfo()
+			return topoInfo.LinkType == topology.Core || topoInfo.LinkType == topology.Child
+		}
+		originationAlgorithms := make([]egress.OriginationAlgorithm, 0)
+		if globalCfg.IREC.OriginationAlgorithms != nil {
+			for _, alg := range globalCfg.IREC.OriginationAlgorithms {
+				originationAlgorithms = append(originationAlgorithms, egress.OriginationAlgorithm{
+					ID:   alg.ID,
+					Hash: alg.HashAsBytes(),
+				})
+			}
+		}
+		s := &egress.Originator{
+			Extender: &egress.DefaultExtender{
+				IA:     topo.IA(),
+				Signer: signer,
+				MAC:    macGen,
+				Intfs:  intfs,
+				MTU:    topo.MTU(),
+				MaxExpTime: func() uint8 {
+					return db.MaxExpTime(beacon.PropPolicy)
+				},
+				Task:       "originator_core",
+				StaticInfo: func() *egress.StaticInfoCfg { return staticInfoEG },
+				EPIC:       false,
+			},
+			OriginationAlgorithms: originationAlgorithms,
+			SenderFactory:         &egress.BeaconSenderFactory{Dialer: dialer},
+			Intfs:                 intfs.Filtered(originationFilter),
+			IA:                    topo.IA(),
+		}
+		periodic.Start(
+			s,
+			10*time.Second,
+			5*time.Second,
+		)
+
+	}
+	log.Info("server is listening at", "udp", quicStack.Listener.Addr())
+	log.Info("TCP server is listening at", "udp", tcpStack.Addr())
+
+	log.Info(" Started Irec tasks")
+
 	g.Go(func() error {
 		defer log.HandlePanic()
 		return globalCfg.Metrics.ServePrometheus(errCtx)
@@ -839,6 +1071,7 @@ func adaptInterfaceMap(in map[common.IFIDType]topology.IFInfo) map[uint16]ifstat
 			info.InternalAddr.Port,
 			info.InternalAddr.Zone,
 		)
+		log.Debug("Intf groups", "intf", info.Groups)
 		if !ok {
 			panic(fmt.Sprintf("failed to adapt the topology format. Input %s", info.InternalAddr))
 		}
@@ -846,6 +1079,7 @@ func adaptInterfaceMap(in map[common.IFIDType]topology.IFInfo) map[uint16]ifstat
 			ID:           uint16(info.ID),
 			IA:           info.IA,
 			LinkType:     info.LinkType,
+			Groups:       info.Groups,
 			InternalAddr: addr,
 			RemoteID:     uint16(info.RemoteIFID),
 			MTU:          uint16(info.MTU),

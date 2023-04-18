@@ -1,0 +1,111 @@
+syntax = "proto3";
+
+option go_package = "github.com/scionproto/scion/pkg/proto/control_plane";
+import "proto/control_plane/v1/seg.proto";
+import "proto/control_plane/v1/seg_extensions.proto";
+import "proto/crypto/v1/signed.proto";
+
+package proto.control_plane.v1;
+
+service IngressService {
+    rpc RequestBeacons(RACBeaconRequest) returns (RACBeaconResponse) {}
+    // Beacon sends a beacon to the remote.
+    rpc Handle(IncomingBeacon) returns (IncomingBeaconResponse) {}
+
+    rpc RegisterRAC(RegisterRACRequest) returns (RegisterRACResponse) {}
+    rpc BeaconSources(RACBeaconSourcesRequest) returns (RACBeaconSources) {}
+    rpc GetJob(RACBeaconRequest) returns (RACJob) {}
+//    GetAlgorithm(AlgorithmRequest) returns (AlgorithmResponse) {}
+
+//    rpc PathForAlgorithmId(AlgorithmNotification) returns ()
+//    rpc Test(TestRequest) returns (TestResponse) {}
+}
+
+message RACJob {
+    repeated proto.control_plane.v1.IRECBeacon beacons = 1;
+    bytes algorithmHash = 2;
+//    repeated InterfaceInfo intfs = 3;
+    repeated uint32 propIntfs = 4;
+}
+message RegisterRACRequest {
+    string addr = 1;
+}
+
+message RegisterRACResponse {
+}
+
+message IncomingBeacon {
+    // Beacon in form of a partial path segment.
+    PathSegment segment = 1;
+}
+
+
+message IncomingBeaconResponse {}
+
+message RACBeaconSources {
+    repeated RACBeaconSource sources = 1;
+}
+message RACBeaconSourcesRequest {
+    bool ignoreIntfGroup = 1;
+}
+message RACBeaconSource {
+    bytes algorithmHash = 1;
+    uint32 algorithmID = 2;
+    uint64 originAS = 3;
+    uint32 originIntfGroup = 4;
+}
+message RACBeaconRequest {
+    uint32 maximum = 1; // max amount of beacons to retrieve, 0 for no limit
+    bytes algorithmHash = 2; // the hash of the algorithm for which to retrieve beacons
+    uint32 algorithmID = 3;
+    uint64 originAS = 4; // the origin isd-as for which to retrieve the beacons
+    uint32 originIntfGroup = 5; // the origin intf group for which to retrieve the beacons
+    bool ignoreIntfGroup = 6; // if false, ignore the originIntfGroup argument and get all for an originAS.
+}
+
+message RACBeaconResponse {
+    repeated IRECBeacon beacons = 1;
+}
+
+message StoredBeacon {
+    PathSegment pathSeg = 1;
+    uint32 inIfId = 2;
+}
+
+
+
+service EgressService {
+    rpc RequestPropagation(PropagationRequest) returns (PropagationRequestResponse) {}
+}
+
+message StoredBeaconAndIntf {
+    StoredBeacon beacon = 1;
+    repeated uint32 egress = 2;
+}
+
+message PropagationRequest {
+    repeated StoredBeaconAndIntf beacon = 1;
+}
+message PropagationRequestResponse{}
+
+
+message IRECBeacon {
+    IRECPathSegment pathSeg = 1;
+    uint32 inIfId = 2;
+    uint32 id = 3; // Optional, unique id within a candidate set
+}
+
+message IRECPathSegment {
+    // The encoded SegmentInformation. It is used for signature input.
+    bytes segment_info = 1;
+    // Entries of ASes on the path.
+    repeated IRECASEntry as_entries = 2;
+}
+
+message IRECASEntry {
+    proto.crypto.v1.SignedMessage signed = 1; //optional
+    // To save time unmarshalling, at the expense of storage, already store the body of the signed entry;
+    proto.control_plane.v1.ASEntrySignedBody signedBody = 3;
+    proto.control_plane.v1.PathSegmentUnsignedExtensions unsigned = 2;
+}
+

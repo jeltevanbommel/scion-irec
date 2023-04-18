@@ -98,6 +98,13 @@ def go_deps():
         version = "v0.0.0-20160522181843-27f122750802",
     )
     go_repository(
+        name = "com_github_bytecodealliance_wasmtime_go",
+        importpath = "github.com/bytecodealliance/wasmtime-go",
+        sum = "h1:9u9gqaUiaJeN5IoD1L7egD8atOnTGyJcNp8BhkL9cUU=",
+        version = "v1.0.0",
+    )
+
+    go_repository(
         name = "com_github_cenkalti_backoff",
         importpath = "github.com/cenkalti/backoff",
         sum = "h1:tNowT99t7UNflLxfYYSlKYsBpXdEet03Pg2g16Swow4=",

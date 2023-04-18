@@ -118,6 +118,52 @@ func (t *TCPDialer) Dial(ctx context.Context, dst net.Addr) (*grpc.ClientConn, e
 		StreamClientInterceptor(),
 	)
 }
+func (t *TCPDialer) DialNoIntercept(ctx context.Context, dst net.Addr) (*grpc.ClientConn, error) {
+	if v, ok := dst.(addr.HostSVC); ok {
+		targets := t.SvcResolver(v)
+		if len(targets) == 0 {
+			return nil, serrors.New("could not resolve")
+		}
+
+		r := manual.NewBuilderWithScheme("svc")
+		r.InitialState(resolver.State{Addresses: targets})
+		return grpc.DialContext(ctx, r.Scheme()+":///"+v.BaseString(),
+			grpc.WithDefaultServiceConfig(`{"loadBalancingConfig": [{"round_robin":{}}]}`),
+			grpc.WithInsecure(),
+			grpc.WithResolvers(r),
+		)
+	}
+
+	return grpc.DialContext(ctx, dst.String(),
+		grpc.WithInsecure(),
+	)
+}
+
+// Dial dials a gRPC connection over TCP. It resolves svc addresses.
+func (t *TCPDialer) DialNoResolve(ctx context.Context, dst net.Addr) (*grpc.ClientConn, error) {
+	if v, ok := dst.(addr.HostSVC); ok {
+		targets := t.SvcResolver(v)
+		if len(targets) == 0 {
+			return nil, serrors.New("could not resolve")
+		}
+
+		r := manual.NewBuilderWithScheme("svc")
+		r.InitialState(resolver.State{Addresses: targets})
+		return grpc.DialContext(ctx, r.Scheme()+":///"+v.BaseString(),
+			grpc.WithDefaultServiceConfig(`{"loadBalancingConfig": [{"round_robin":{}}]}`),
+			grpc.WithInsecure(),
+			grpc.WithResolvers(r),
+			UnaryClientInterceptor(),
+			StreamClientInterceptor(),
+		)
+	}
+
+	return grpc.DialContext(ctx, dst.String(),
+		grpc.WithInsecure(),
+		UnaryClientInterceptor(),
+		StreamClientInterceptor(),
+	)
+}
 
 // AddressRewriter redirects to QUIC endpoints.
 type AddressRewriter interface {

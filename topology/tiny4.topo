@@ -1,15 +1,58 @@
 --- # Tiny Topology, IPv4 Only
 ASes:
+  "1-ff00:0:109":
+    core: true
+    voting: true
+    authoritative: true
+    issuing: true
+    mtu: 1400
+    racs: 1
+    irec:
+      algorithms:
+        - {hexhash: deadbeef, id: 0, file: algorithms/module.wasm}
   "1-ff00:0:110":
     core: true
     voting: true
     authoritative: true
     issuing: true
     mtu: 1400
+    racs: 1
+    irec:
+      algorithms:
+        - {hexhash: deadbeef, id: 0, file: algorithms/module.wasm}
+        - {hexhash: deadbeef01, id: 1, file: algorithms/module.wasm}
   "1-ff00:0:111":
+    racs: 4
     cert_issuer: 1-ff00:0:110
   "1-ff00:0:112":
+    racs: 1
+    cert_issuer: 1-ff00:0:110
+  "1-ff00:0:113":
+    racs: 1
+    cert_issuer: 1-ff00:0:110
+  "1-ff00:0:114":
+    racs: 1
+    cert_issuer: 1-ff00:0:110
+  "1-ff00:0:115":
+    racs: 1
+    cert_issuer: 1-ff00:0:110
+  "1-ff00:0:116":
+    racs: 1
+    cert_issuer: 1-ff00:0:110
+  "1-ff00:0:117":
+    racs: 1
+    cert_issuer: 1-ff00:0:110
+  "1-ff00:0:118":
+    racs: 1
     cert_issuer: 1-ff00:0:110
 links:
-  - {a: "1-ff00:0:110#1", b: "1-ff00:0:111#41", linkAtoB: CHILD, mtu: 1280}
-  - {a: "1-ff00:0:110#2", b: "1-ff00:0:112#1", linkAtoB: CHILD, bw: 500}
+  - {a: "1-ff00:0:109#1", b: "1-ff00:0:110#44", linkAtoB: CORE, mtu: 1280, groupsA: [1,2]}
+  - {a: "1-ff00:0:110#1", b: "1-ff00:0:111#41", linkAtoB: CHILD, mtu: 1280, groupsA: [1,2]}
+  - {a: "1-ff00:0:111#42", b: "1-ff00:0:112#1", linkAtoB: CHILD, bw: 500}
+  - {a: "1-ff00:0:111#44", b: "1-ff00:0:113#2", linkAtoB: CHILD, bw: 500}
+  - {a: "1-ff00:0:112#42", b: "1-ff00:0:113#1", linkAtoB: CHILD, bw: 500}
+  - {a: "1-ff00:0:113#42", b: "1-ff00:0:114#1", linkAtoB: CHILD, bw: 500}
+  - {a: "1-ff00:0:114#42", b: "1-ff00:0:115#1", linkAtoB: CHILD, bw: 500}
+  - {a: "1-ff00:0:115#42", b: "1-ff00:0:116#1", linkAtoB: CHILD, bw: 500}
+  - {a: "1-ff00:0:116#42", b: "1-ff00:0:117#1", linkAtoB: CHILD, bw: 500}
+  - {a: "1-ff00:0:117#42", b: "1-ff00:0:118#1", linkAtoB: CHILD, bw: 500}

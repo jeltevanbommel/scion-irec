@@ -4,6 +4,7 @@ require (
 	github.com/antlr/antlr4/runtime/Go/antlr v0.0.0-20220209173558-ad29539cd2e9
 	github.com/bazelbuild/rules_go v0.38.1
 	github.com/buildkite/go-buildkite/v2 v2.9.0
+	github.com/bytecodealliance/wasmtime-go v1.0.0
 	github.com/dchest/cmac v1.0.0
 	github.com/deepmap/oapi-codegen v1.12.5-0.20230221180206-2b52cd58cf5b
 	github.com/fatih/color v1.14.1
